@@ -17,7 +17,7 @@ MongoDB uses collections rather than fixed SQL tables. Collections are created l
 - `treatmentplanversions` — immutable/versioned treatment plans scoped to patient and hospital.
 - `materialsessions` — PD kit/material issue and day allowance.
 - `dialysissessions` — PD day lifecycle, readings, symptoms, images, verification, and hospital reference.
-- `imageassets` — image metadata and storage references; image retrieval is authorization-protected.
+- `imageassets` — image metadata and storage references; image retrieval is authorization-protected or requires a signed, expiring link.
 
 ## Governance collections
 

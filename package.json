@@ -19,7 +19,7 @@
     "repair:clinical-indexes": "node scripts/repairClinicalIndexes.js",
     "audit:frontend": "node scripts/auditFrontend.js",
     "smoke:phase9": "node scripts/smokePhase9.js",
-    "test": "node --test test/api.test.js",
+    "test": "node --test test/api.test.js test/mobileCompat.test.js",
     "test:atlas": "node --test test/api.test.js"
   },
   "dependencies": {

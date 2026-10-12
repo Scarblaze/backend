@@ -1,6 +1,7 @@
 import { DialysisSession } from '../models/DialysisSession.js';
 import { ImageAsset } from '../models/ImageAsset.js';
 import { str, toInt } from '../utils/clean.js';
+import { signedImageUrl } from './imageLinks.js';
 
 export function baseUrl(req) {
   return (process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
@@ -8,7 +9,8 @@ export function baseUrl(req) {
 
 export const formatImage = (img, base) => ({
   id: String(img._id),
-  imageUrl: img.storage === 'db' ? `${base}/api/images/${img.token}` : img.url,
+  // Photos kept in MongoDB get a signed, expiring link (see services/imageLinks.js); Cloudinary photos use their own URL.
+  imageUrl: img.storage === 'db' ? signedImageUrl(base, img.token) : img.url,
   uploadedAt: img.uploadedAt,
   publicId: img.publicId || '',
 });

@@ -2,7 +2,7 @@
 
 ## Implemented controls
 
-- JWT authentication with a 12-hour default expiry.
+- JWT authentication. Browser (web portal) logins expire after 12 hours (`JWT_EXPIRES_IN`). Logins from the Flutter app (doctor and patient roles, no `Origin` header) last 30 days (`JWT_MOBILE_EXPIRES_IN`) because the app has no token refresh; portal-only roles are always short-lived.
 - Current-user reload on protected requests, so suspended accounts and role changes take effect promptly.
 - Role middleware plus hospital membership checks.
 - Suspended-hospital blocking for ordinary members.
@@ -11,7 +11,7 @@
 - Login attempt throttling by IP and normalized email.
 - Password hashing with bcrypt.
 - Invitation tokens and image tokens are not used as unrestricted database identifiers.
-- Image retrieval requires authenticated, patient-authorized access.
+- Image retrieval: a bare `/api/images/:token` requires a Bearer token and patient/hospital authorization. The photo URLs returned inside API responses carry a signed, expiring link (HMAC, 24 hours by default, `IMAGE_LINK_TTL_SECONDS`) so the Flutter app's `Image.network` works without headers. A bad or expired signature is always refused. Anyone holding a freshly issued link can view that one photo until it expires, so treat API responses as sensitive.
 - Hospital-scoped clinical queries and relationship checks.
 - Audit events for important administration and clinical governance actions.
 - Input validation for IDs, roles, status values, invitation expiry, and assignment membership.

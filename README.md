@@ -23,7 +23,7 @@ PHASE9_VALIDATION.md    automated validation results and clinical review checkli
 
 ## Endpoints
 
-The detailed route catalogue, role matrix, data model, workflows, security controls, deployment runbook, and testing guide are in [`docs/`](docs/README.md). Protected endpoints use `Authorization: Bearer <token>`; invitation activation is public with a one-time token, and image retrieval is authenticated and authorization-checked.
+The detailed route catalogue, role matrix, data model, workflows, security controls, deployment runbook, and testing guide are in [`docs/`](docs/README.md). Protected endpoints use `Authorization: Bearer <token>`; invitation activation is public with a one-time token, and image retrieval needs either a Bearer token (authorization-checked) or the signed, expiring link included in API responses.
 
 ## Legacy endpoint summary (all JSON unless noted)
 | Method | Path | Who | Purpose |
@@ -42,7 +42,7 @@ The detailed route catalogue, role matrix, data model, workflows, security contr
 | PATCH | `/api/upload/finish-dialysis-session` | patient | `{sessionId, symptoms, readings?}` |
 | PATCH | `/api/upload/verify-dialysis-session` | doctor | `{sessionId, verificationNotes}` |
 | POST | `/api/upload/upload` | doctor (kit) / patient (own active day) | multipart: `image`, `sessionId` |
-| GET | `/api/images/:token` | authenticated and authorized | photo bytes (when stored in MongoDB) |
+| GET | `/api/images/:token` | Bearer + authorized, or signed link (`?exp&sig`) | photo bytes (when stored in MongoDB) |
 
 Lifecycle: kit `active` → patient acknowledges → `acknowledged`; each day `active` → `completed` → `verified`.
 A doctor only ever sees their own patients; a patient only their own records.

@@ -21,7 +21,10 @@ Required:
 
 Optional:
 
-- `CORS_ORIGIN` — comma-separated allowed browser origins;
+- `CORS_ORIGIN` — comma-separated allowed browser origins (the deployed web portal must be listed);
+- `JWT_EXPIRES_IN` — web portal login lifetime, default `12h`;
+- `JWT_MOBILE_EXPIRES_IN` — Flutter app login lifetime (doctor/patient only), default `30d`;
+- `IMAGE_LINK_TTL_SECONDS` — lifetime of signed photo links in API responses, default `86400`;
 - `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`;
 - seed-specific variables documented by the seed scripts.
 
