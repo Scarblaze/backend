@@ -10,6 +10,7 @@ import authRoutes from './routes/auth.js';
 import uploadRoutes from './routes/upload.js';
 import imageRoutes from './routes/images.js';
 import hospitalRoutes from './routes/hospitals.js';
+import hospitalDoctorRoutes from './routes/hospitalDoctors.js';
 import auditRoutes from './routes/audit.js';
 import breakGlassRoutes from './routes/breakGlass.js';
 import consentRoutes from './routes/consent.js';
@@ -39,6 +40,7 @@ app.get('/api/health', (_req, res) =>
 app.use('/api/auth', authRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/images', imageRoutes);
+app.use('/api/hospitals', hospitalDoctorRoutes);
 app.use('/api/hospitals', hospitalRoutes);
 app.use('/api/audit-events', auditRoutes);
 app.use('/api/break-glass', breakGlassRoutes);
