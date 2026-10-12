@@ -6,6 +6,14 @@ import { isId } from '../utils/clean.js';
 
 const router = Router();
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const loginAttempts = new Map();
+function enforceLoginRateLimit(req, key) {
+  const now = Date.now();
+  for (const [entry, value] of loginAttempts) if (value.resetAt <= now) loginAttempts.delete(entry);
+  const current = loginAttempts.get(key) || { count: 0, resetAt: now + 60_000 };
+  if (current.count >= 10) throw new HttpError(429, 'Too many login attempts. Please try again in a minute.');
+  current.count += 1; loginAttempts.set(key, current);
+}
 
 // POST /api/auth/login  { email, password } -> { token, user:{id,name,email,role} }
 router.post(
@@ -16,10 +24,13 @@ router.post(
       throw new HttpError(400, 'Please provide email and password');
     }
 
-    const user = await User.findOne({ email: email.trim().toLowerCase() }).select('+passwordHash');
+    const cleanEmail = email.trim().toLowerCase();
+    enforceLoginRateLimit(`${req.ip}:${cleanEmail}`);
+    const user = await User.findOne({ email: cleanEmail }).select('+passwordHash');
     const ok = await (user ? user.checkPassword(password) : User.hashPassword(password).then(() => false));
     if (!user || !ok) throw new HttpError(401, 'Invalid credentials');
     if (user.accountStatus !== 'active') throw new HttpError(403, 'Account is suspended');
+    loginAttempts.delete(`${req.ip}:${cleanEmail}`);
 
     res.json({
       success: true,

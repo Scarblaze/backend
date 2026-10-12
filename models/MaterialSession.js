@@ -5,6 +5,7 @@ const { ObjectId, Mixed } = mongoose.Schema.Types;
 // A "kit" of PD supplies a doctor issues to a patient, good for `sessionsCount` dialysis sessions.
 const MaterialSessionSchema = new mongoose.Schema(
   {
+    hospital: { type: ObjectId, ref: 'Hospital', default: null, index: true },
     patient: { type: ObjectId, ref: 'User', required: true, index: true },
     doctor: { type: ObjectId, ref: 'User', required: true },
     sessionsCount: { type: Number, required: true, min: 1 },

@@ -4,8 +4,10 @@ const { ObjectId } = mongoose.Schema.Types;
 
 const MedicalProfileSchema = new mongoose.Schema(
   {
-    patient: { type: ObjectId, ref: 'User', required: true, unique: true },
+    patient: { type: ObjectId, ref: 'User', required: true, index: true },
+    hospital: { type: ObjectId, ref: 'Hospital', default: null, index: true },
     age: { type: Number, default: 0 },
+    dateOfBirth: { type: String, default: '' },
     gender: { type: String, default: '' },
     crNumber: { type: String, default: '' },
     contactNumber: { type: String, default: '' },
@@ -29,5 +31,7 @@ const MedicalProfileSchema = new mongoose.Schema(
   },
   { timestamps: true, minimize: false }
 );
+
+MedicalProfileSchema.index({ patient: 1, hospital: 1 }, { unique: true });
 
 export const MedicalProfile = mongoose.model('MedicalProfile', MedicalProfileSchema);

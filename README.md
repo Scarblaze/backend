@@ -11,14 +11,21 @@ app.js                  Express app (routes, CORS, error handling)
 server.js               local dev entry
 config/db.js            cached Mongo connection for serverless
 middleware/             auth (JWT + roles), upload (multer), error handler
-models/                 User, MedicalProfile, BaselineAssessment, MaterialSession, DialysisSession, ImageAsset
-routes/                 auth.js, upload.js (all /api/upload/*), images.js
+models/                 users, hospitals, memberships, consents, transfers, audit, notifications and PD clinical records
+routes/                 auth, hospital, consent, transfer, audit, notification, history and upload APIs
 services/               access control, image storage, response formatters
 scripts/seed.js         create the first doctor/admin
+scripts/seedDemo.js     guarded demo hospital, staff, patient and PD records
 test/api.test.js        end-to-end test replaying the app's requests
+PHASE_STATUS.md         phase completion record and remaining production-readiness work
+PHASE9_VALIDATION.md    automated validation results and clinical review checklist
 ```
 
-## Endpoints (all JSON, `Authorization: Bearer <token>` except login and image URLs)
+## Endpoints
+
+The detailed route catalogue, role matrix, data model, workflows, security controls, deployment runbook, and testing guide are in [`docs/`](docs/README.md). Protected endpoints use `Authorization: Bearer <token>`; invitation activation is public with a one-time token, and image retrieval is authenticated and authorization-checked.
+
+## Legacy endpoint summary (all JSON unless noted)
 | Method | Path | Who | Purpose |
 |---|---|---|---|
 | POST | `/api/auth/login` | any | `{email,password}` → `{token,user:{id,name,email,role}}` |
@@ -35,7 +42,7 @@ test/api.test.js        end-to-end test replaying the app's requests
 | PATCH | `/api/upload/finish-dialysis-session` | patient | `{sessionId, symptoms, readings?}` |
 | PATCH | `/api/upload/verify-dialysis-session` | doctor | `{sessionId, verificationNotes}` |
 | POST | `/api/upload/upload` | doctor (kit) / patient (own active day) | multipart: `image`, `sessionId` |
-| GET | `/api/images/:token` | public (unguessable) | photo bytes (when stored in MongoDB) |
+| GET | `/api/images/:token` | authenticated and authorized | photo bytes (when stored in MongoDB) |
 
 Lifecycle: kit `active` → patient acknowledges → `acknowledged`; each day `active` → `completed` → `verified`.
 A doctor only ever sees their own patients; a patient only their own records.
@@ -54,7 +61,20 @@ A doctor only ever sees their own patients; a patient only their own records.
    SEED_EMAIL=doctor1@example.com SEED_PASSWORD='choose-a-strong-one' npm run seed
    ```
    Re-running resets that account's password.
-4. **Point the app at it** (the app's built-in default URL is the dead one):
+4. **Optional: seed a complete demo workflow**. Use a separate Atlas database/cluster for demo or staging;
+   do not run this against production. The script is deliberately guarded and is safe to re-run because it
+   upserts the same demo records:
+   ```
+   $env:SEED_DEMO_CONFIRM='YES'
+   $env:SEED_DEMO_PASSWORD='choose-a-strong-demo-password'
+   npm run seed:demo
+   ```
+   Optional variables include `SEED_DEMO_HOSPITAL_CODE`, `SEED_DEMO_HOSPITAL_NAME`,
+   `SEED_PLATFORM_EMAIL`, `SEED_HOSPITAL_ADMIN_EMAIL`, `SEED_DOCTOR_EMAIL`, and `SEED_PATIENT_EMAIL`.
+   The demo creates a platform admin, hospital admin, doctor, patient, hospital membership records,
+   an active patient-hospital relationship, CAPD baseline data, a treatment-plan version and consent.
+   It does not create fake dialysis-session history or audit events.
+5. **Point the app at it** (the app's built-in default URL is the dead one):
    ```
    flutter run --dart-define=BASE_URL=https://<your-project>.vercel.app
    flutter build apk --dart-define=BASE_URL=https://<your-project>.vercel.app
@@ -78,3 +98,8 @@ MONGODB_URI=mongodb://127.0.0.1:27017/dialysis_test npm test   # WIPES that data
   has 512 MB). Set the Cloudinary variables to move new uploads there; nothing else changes.
 - **`weightKg`**: the app declares it `double?`, and Dart crashes decoding `70` into it, so the API always
   writes whole numbers as `70.0` (see `utils/json.js`).
+- **Atlas collections are created lazily**: MongoDB does not use fixed SQL tables here. A collection appears
+  when the first document is written. The original seed only creates one doctor/admin, so the newer hospital,
+  consent, transfer, notification, audit and treatment-plan collections remain empty until their workflows are
+  used or the guarded demo seed is run.
+- Phase tracking and the remaining role-dashboard/production work are maintained in `PHASE_STATUS.md`.

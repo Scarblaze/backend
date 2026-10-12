@@ -8,7 +8,8 @@ const LabValue = new mongoose.Schema({ value: { type: Number, default: 0 }, date
 
 const BaselineAssessmentSchema = new mongoose.Schema(
   {
-    patient: { type: ObjectId, ref: 'User', required: true, unique: true },
+    patient: { type: ObjectId, ref: 'User', required: true, index: true },
+    hospital: { type: ObjectId, ref: 'Hospital', default: null, index: true },
     primaryDiagnosis: { type: String, default: '' },
     nativeKidneyDisease: { type: String, default: '' },
     dialysisType: { type: String, default: '' },
@@ -58,5 +59,7 @@ const BaselineAssessmentSchema = new mongoose.Schema(
   },
   { timestamps: true, minimize: false }
 );
+
+BaselineAssessmentSchema.index({ patient: 1, hospital: 1 }, { unique: true });
 
 export const BaselineAssessment = mongoose.model('BaselineAssessment', BaselineAssessmentSchema);

@@ -4,14 +4,18 @@ import { MedicalProfile } from '../models/MedicalProfile.js';
 import { BaselineAssessment } from '../models/BaselineAssessment.js';
 import { MaterialSession } from '../models/MaterialSession.js';
 import { DialysisSession } from '../models/DialysisSession.js';
+import { TreatmentPlanVersion } from '../models/TreatmentPlanVersion.js';
+import { PatientHospitalRelationship } from '../models/PatientHospitalRelationship.js';
+import { notifyHospitalAdmins } from '../services/notifications.js';
 import { ImageAsset } from '../models/ImageAsset.js';
 import { protect, restrictTo } from '../middleware/auth.js';
 import { imageUpload } from '../middleware/upload.js';
 import { HttpError, ah } from '../utils/errors.js';
 import { isId, isPlainObject, str, toInt, toNum, pick, cleanCounts, cleanPrimitives } from '../utils/clean.js';
-import { assertCanAccess, getPatientFor, resolvePatientId } from '../services/access.js';
+import { canAccessPatient, getPatientFor, resolvePatientId } from '../services/access.js';
 import { storeImage } from '../services/storage.js';
 import { baseUrl, buildMaterialPayloads, formatBaseline, formatImage, formatProfile } from '../services/formatters.js';
+import { recordAudit } from '../services/audit.js';
 
 const router = Router();
 router.use(protect);
@@ -27,7 +31,7 @@ async function loadMaterial(user, id, patientIdHint) {
     throw new HttpError(404, 'Material session not found');
   }
   const patient = await User.findById(ms.patient);
-  assertCanAccess(user, patient);
+  await canAccessPatient(user, patient, ms.hospital);
   return { ms, patient };
 }
 
@@ -47,7 +51,13 @@ router.post(
     }
     if (!isId(doctorId)) throw new HttpError(400, 'A valid doctorId is required');
 
-    const patients = await User.find({ role: 'patient', assignedDoctor: doctorId }).sort({ createdAt: -1 }).lean();
+    const [legacyPatients, relationships] = await Promise.all([
+      User.find({ role: 'patient', assignedDoctor: doctorId }).sort({ createdAt: -1 }).lean(),
+      PatientHospitalRelationship.find({ primaryDoctor: doctorId, status: 'active' }).populate('patient', 'name email phone').sort({ createdAt: -1 }).lean(),
+    ]);
+    const byId = new Map(legacyPatients.map((patient) => [String(patient._id), patient]));
+    for (const relationship of relationships) if (relationship.patient) byId.set(String(relationship.patient._id), relationship.patient);
+    const patients = [...byId.values()];
     res.json({
       success: true,
       count: patients.length,
@@ -57,7 +67,7 @@ router.post(
 );
 
 const PROFILE_STRINGS = [
-  'gender', 'crNumber', 'contactNumber', 'address', 'educationLevel', 'incomeLevel',
+  'gender', 'dateOfBirth', 'crNumber', 'contactNumber', 'address', 'educationLevel', 'incomeLevel',
   'primaryDiagnosis', 'nativeKidneyDisease', 'dialysisType', 'bloodGroup', 'height', 'weight',
 ];
 const toStringList = (v) => (Array.isArray(v) ? v.map((x) => str(x).trim()).filter(Boolean) : []);
@@ -67,10 +77,11 @@ router.patch(
   '/doctor/medical-profile',
   STAFF,
   ah(async (req, res) => {
-    const patient = await getPatientFor(req.user, req.body?.patientId);
+    const patient = await getPatientFor(req.user, req.body?.patientId, req.body?.hospitalId);
     const b = req.body;
 
-    const set = { updatedBy: req.user._id };
+    const hospitalId = req.body?.hospitalId || null;
+    const set = { updatedBy: req.user._id, hospital: hospitalId };
     for (const k of PROFILE_STRINGS) if (b[k] !== undefined) set[k] = str(b[k]).trim();
     if (b.age !== undefined) set.age = Math.max(0, toInt(b.age, 0));
     if (b.allergies !== undefined) set.allergies = toStringList(b.allergies);
@@ -82,10 +93,12 @@ router.patch(
     }
 
     const doc = await MedicalProfile.findOneAndUpdate(
-      { patient: patient._id },
+      { patient: patient._id, hospital: hospitalId },
       { $set: set },
       { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true }
     ).lean();
+
+    await recordAudit({ actor: req.user._id, action: 'clinical.medical_profile.updated', resourceType: 'MedicalProfile', resourceId: doc._id, metadata: { patientId: String(patient._id) } });
 
     res.json({ success: true, message: 'Medical profile saved', profile: formatProfile(doc, patient._id) });
   })
@@ -104,8 +117,9 @@ router.patch(
   '/doctor/baseline-assessment',
   STAFF,
   ah(async (req, res) => {
-    const patient = await getPatientFor(req.user, req.body?.patientId);
-    const set = { ...pick(req.body, BASELINE_FIELDS), updatedBy: req.user._id };
+    const patient = await getPatientFor(req.user, req.body?.patientId, req.body?.hospitalId);
+    const hospitalId = req.body?.hospitalId || null;
+    const set = { ...pick(req.body, BASELINE_FIELDS), updatedBy: req.user._id, hospital: hospitalId };
     for (const k of DATE_FIELDS) if (k in set) set[k] = dateOrNull(set[k]);
     if ('labs' in set && isPlainObject(set.labs)) {
       for (const lab of Object.values(set.labs)) if (isPlainObject(lab)) lab.date = dateOrNull(lab.date);
@@ -115,10 +129,24 @@ router.patch(
     }
 
     const doc = await BaselineAssessment.findOneAndUpdate(
-      { patient: patient._id },
+      { patient: patient._id, hospital: hospitalId },
       { $set: set },
       { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true }
     ).lean();
+
+    const latestVersion = await TreatmentPlanVersion.findOne({ patient: patient._id, hospital: req.body?.hospitalId || null })
+      .sort({ version: -1 })
+      .select('version')
+      .lean();
+    await TreatmentPlanVersion.create({
+      patient: patient._id,
+      hospital: req.body?.hospitalId || null,
+      version: (latestVersion?.version || 0) + 1,
+      plan: doc,
+      updatedBy: req.user._id,
+    });
+
+    await recordAudit({ actor: req.user._id, action: 'clinical.baseline_assessment.updated', resourceType: 'BaselineAssessment', resourceId: doc._id, metadata: { patientId: String(patient._id) } });
 
     res.json({ success: true, message: 'Baseline assessment saved', baselineAssessment: formatBaseline(doc) });
   })
@@ -128,10 +156,10 @@ router.patch(
 router.post(
   '/medical-profile',
   ah(async (req, res) => {
-    const patient = await getPatientFor(req.user, resolvePatientId(req));
+    const patient = await getPatientFor(req.user, resolvePatientId(req), req.body?.hospitalId);
     const [profile, baseline] = await Promise.all([
-      MedicalProfile.findOne({ patient: patient._id }).lean(),
-      BaselineAssessment.findOne({ patient: patient._id }).lean(),
+      MedicalProfile.findOne({ patient: patient._id, hospital: req.body?.hospitalId || null }).lean(),
+      BaselineAssessment.findOne({ patient: patient._id, hospital: req.body?.hospitalId || null }).lean(),
     ]);
     res.json({
       success: true,
@@ -150,13 +178,14 @@ router.post(
   STAFF,
   ah(async (req, res) => {
     const { sessionsCount, pdMaterials, notes } = req.body || {};
-    const patient = await getPatientFor(req.user, req.body?.patientId);
+    const patient = await getPatientFor(req.user, req.body?.patientId, req.body?.hospitalId);
 
     const count = toInt(sessionsCount, 0);
     if (count < 1 || count > 366) throw new HttpError(400, 'sessionsCount must be between 1 and 366');
     const m = isPlainObject(pdMaterials) ? pdMaterials : {};
 
     const ms = await MaterialSession.create({
+      hospital: req.body?.hospitalId || null,
       patient: patient._id,
       doctor: req.user.role === 'doctor' ? req.user._id : patient.assignedDoctor || req.user._id,
       sessionsCount: count,
@@ -171,6 +200,8 @@ router.post(
       notes: str(notes).trim(),
     });
 
+    await recordAudit({ actor: req.user._id, action: 'clinical.material_session.created', resourceType: 'MaterialSession', resourceId: ms._id, metadata: { patientId: String(patient._id), sessionsCount: count } });
+
     res.json({
       success: true,
       message: 'Material session created',
@@ -183,7 +214,7 @@ router.post(
 router.post(
   '/patient/material-summary',
   ah(async (req, res) => {
-    const patient = await getPatientFor(req.user, resolvePatientId(req));
+    const patient = await getPatientFor(req.user, resolvePatientId(req), req.body?.hospitalId);
     const kits = await MaterialSession.find({ patient: patient._id }).sort({ createdAt: -1 }).lean();
     res.json({
       success: true,
@@ -217,6 +248,7 @@ router.patch(
       ms.status = 'acknowledged';
       ms.acknowledgedAt = new Date();
       await ms.save();
+      await recordAudit({ actor: req.user._id, action: 'clinical.material_session.acknowledged', resourceType: 'MaterialSession', resourceId: ms._id, metadata: { patientId: String(ms.patient) } });
     }
     res.json({ success: true, message: 'Materials acknowledged', status: ms.status, acknowledgedAt: ms.acknowledgedAt });
   })
@@ -255,10 +287,12 @@ router.post(
     try {
       const created = await DialysisSession.create({
         materialSession: ms._id,
+        hospital: ms.hospital || null,
         patient: req.user._id,
         doctor: ms.doctor,
         sequence,
       });
+      await recordAudit({ actor: req.user._id, action: 'clinical.dialysis_session.started', resourceType: 'DialysisSession', resourceId: created._id, metadata: { patientId: String(req.user._id), materialSessionId: String(ms._id), sequence } });
       return reply(created, false);
     } catch (err) {
       if (err.code === 11000) {
@@ -292,6 +326,7 @@ router.patch(
     s.status = 'completed';
     s.completedAt = new Date();
     await s.save();
+    await recordAudit({ actor: req.user._id, action: 'clinical.dialysis_session.completed', resourceType: 'DialysisSession', resourceId: s._id, metadata: { patientId: String(s.patient) } });
 
     res.json({ success: true, message: 'Dialysis session completed', session: { _id: String(s._id), status: s.status } });
   })
@@ -306,7 +341,7 @@ router.patch(
     if (!isId(sessionId)) throw new HttpError(400, 'A valid sessionId is required');
     const s = await DialysisSession.findById(sessionId);
     if (!s) throw new HttpError(404, 'Dialysis session not found');
-    assertCanAccess(req.user, await User.findById(s.patient));
+    await canAccessPatient(req.user, await User.findById(s.patient), s.hospital);
 
     if (s.status === 'verified') throw new HttpError(409, 'Session is already verified');
     if (s.status !== 'completed') throw new HttpError(409, 'Only completed sessions can be verified');
@@ -317,6 +352,8 @@ router.patch(
     s.verifiedByName = req.user.name;
     s.verificationNotes = str(verificationNotes).trim();
     await s.save();
+    await recordAudit({ actor: req.user._id, action: 'clinical.dialysis_session.verified', resourceType: 'DialysisSession', resourceId: s._id, metadata: { patientId: String(s.patient), hasVerificationNotes: Boolean(s.verificationNotes) } });
+    if (s.hospital) await notifyHospitalAdmins({ hospital: s.hospital, type: 'dialysis_session.verified', title: 'PD session verified', message: 'A PD session has been verified and is available for review.', resourceType: 'DialysisSession', resourceId: String(s._id) });
 
     res.json({ success: true, message: 'Session verified', session: { _id: String(s._id), status: s.status } });
   })
@@ -338,7 +375,7 @@ router.post(
     const kit = await MaterialSession.findById(sessionId);
     if (kit) {
       if (!['doctor', 'admin'].includes(req.user.role)) throw new HttpError(403, 'Only doctors can attach kit photos');
-      assertCanAccess(req.user, await User.findById(kit.patient));
+      await canAccessPatient(req.user, await User.findById(kit.patient), kit.hospital);
       ownerType = 'material';
       patientId = kit.patient;
     } else {
@@ -364,6 +401,8 @@ router.post(
       uploadedBy: req.user._id,
       ...stored,
     });
+
+    await recordAudit({ actor: req.user._id, action: 'clinical.image.uploaded', resourceType: 'ImageAsset', resourceId: asset._id, metadata: { patientId: String(patientId), ownerType, ownerId: String(sessionId) } });
 
     res.json({ success: true, message: 'Image uploaded', image: formatImage(asset.toObject(), baseUrl(req)) });
   })

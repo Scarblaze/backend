@@ -11,7 +11,16 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "seed": "node scripts/seed.js",
-    "test": "node --test test/api.test.js"
+    "seed:demo": "node scripts/seedDemo.js",
+    "seed:synthetic": "node scripts/seedSynthetic.js",
+    "cleanup:synthetic": "node scripts/cleanupSynthetic.js",
+    "migrate:clinical-scope": "node scripts/migrateClinicalScope.js",
+    "audit:clinical-scope": "node scripts/auditClinicalScope.js",
+    "repair:clinical-indexes": "node scripts/repairClinicalIndexes.js",
+    "audit:frontend": "node scripts/auditFrontend.js",
+    "smoke:phase9": "node scripts/smokePhase9.js",
+    "test": "node --test test/api.test.js",
+    "test:atlas": "node --test test/api.test.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

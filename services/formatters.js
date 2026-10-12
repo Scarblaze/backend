@@ -87,6 +87,7 @@ export function formatProfile(doc, patientId) {
     patientId: String(patientId),
     gender: str(p.gender),
     age: toInt(p.age, 0),
+    dateOfBirth: str(p.dateOfBirth),
     bloodGroup: str(p.bloodGroup),
     dialysisType: str(p.dialysisType),
     height: str(p.height),

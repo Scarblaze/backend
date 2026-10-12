@@ -7,9 +7,15 @@ const UserSchema = new mongoose.Schema(
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     phone: { type: String, default: '', trim: true },
     passwordHash: { type: String, required: true, select: false },
-    role: { type: String, enum: ['doctor', 'patient', 'admin'], default: 'patient', index: true },
+    role: {
+      type: String,
+      enum: ['platform_admin', 'hospital_admin', 'doctor', 'assistant_doctor', 'nurse', 'dialysis_technician', 'pharmacist', 'records_officer', 'patient', 'admin'],
+      default: 'patient',
+      index: true,
+    },
     // Patients point at the doctor who registered them.
     assignedDoctor: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+    supervisingDoctor: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
     accountStatus: { type: String, enum: ['active', 'suspended'], default: 'active' },
   },
   { timestamps: true }

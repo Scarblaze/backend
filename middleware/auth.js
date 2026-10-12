@@ -11,7 +11,7 @@ export function getJwtSecret() {
 }
 
 export const signToken = (user) =>
-  jwt.sign({ id: String(user._id), role: user.role }, getJwtSecret(), { expiresIn: '30d' });
+  jwt.sign({ id: String(user._id), role: user.role }, getJwtSecret(), { expiresIn: process.env.JWT_EXPIRES_IN || '12h' });
 
 export const protect = ah(async (req, _res, next) => {
   const header = req.headers.authorization || '';

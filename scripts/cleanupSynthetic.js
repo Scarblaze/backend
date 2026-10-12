@@ -1,0 +1,31 @@
+import 'dotenv/config';
+import mongoose from 'mongoose';
+import connectDB from '../config/db.js';
+import { User } from '../models/User.js';
+import { Hospital } from '../models/Hospital.js';
+import { HospitalMembership } from '../models/HospitalMembership.js';
+import { PatientHospitalRelationship } from '../models/PatientHospitalRelationship.js';
+import { MedicalProfile } from '../models/MedicalProfile.js';
+import { BaselineAssessment } from '../models/BaselineAssessment.js';
+import { TreatmentPlanVersion } from '../models/TreatmentPlanVersion.js';
+import { PatientConsent } from '../models/PatientConsent.js';
+import { MaterialSession } from '../models/MaterialSession.js';
+import { DialysisSession } from '../models/DialysisSession.js';
+import { PatientTransfer } from '../models/PatientTransfer.js';
+import { BreakGlassAccess } from '../models/BreakGlassAccess.js';
+import { Notification } from '../models/Notification.js';
+import { AuditEvent } from '../models/AuditEvent.js';
+
+if (process.env.CLEANUP_SYNTHETIC_CONFIRM !== 'YES') throw new Error('Set CLEANUP_SYNTHETIC_CONFIRM=YES to remove synthetic data');
+await connectDB();
+const hospitals = await Hospital.find({ code: /^SYNTH-/ }).select('_id').lean();
+const hospitalIds = hospitals.map((item) => item._id);
+const users = await User.find({ email: /^synthetic\./ }).select('_id').lean();
+const userIds = users.map((item) => item._id);
+const filters = { $or: [{ hospital: { $in: hospitalIds } }, { user: { $in: userIds } }, { patient: { $in: userIds } }, { actor: { $in: userIds } }] };
+const results = {};
+for (const Model of [HospitalMembership, PatientHospitalRelationship, MedicalProfile, BaselineAssessment, TreatmentPlanVersion, MaterialSession, DialysisSession, PatientTransfer, BreakGlassAccess, Notification, AuditEvent]) { const result = await Model.deleteMany(filters); results[Model.modelName] = result.deletedCount; }
+results.Hospital = (await Hospital.deleteMany({ _id: { $in: hospitalIds } })).deletedCount;
+results.User = (await User.deleteMany({ _id: { $in: userIds } })).deletedCount;
+console.log(JSON.stringify({ success: true, results }));
+await mongoose.disconnect();

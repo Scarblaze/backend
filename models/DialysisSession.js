@@ -30,6 +30,7 @@ const ReadingsSchema = new mongoose.Schema(
 // One dialysis day. Lifecycle: active (started) -> completed (patient finished) -> verified (doctor).
 const DialysisSessionSchema = new mongoose.Schema(
   {
+    hospital: { type: ObjectId, ref: 'Hospital', default: null, index: true },
     materialSession: { type: ObjectId, ref: 'MaterialSession', required: true, index: true },
     patient: { type: ObjectId, ref: 'User', required: true, index: true },
     doctor: { type: ObjectId, ref: 'User', required: true },

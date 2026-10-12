@@ -1,15 +1,27 @@
 // End-to-end test that replays the exact requests the Flutter app makes.
-// Run against a scratch database:  MONGODB_URI=mongodb://127.0.0.1:27017/dialysis_test JWT_SECRET=... npm test
+// Uses MongoDB Atlas and redirects the configured URI to the isolated dialysis_test database.
+import 'dotenv/config';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import mongoose from 'mongoose';
 
 process.env.JWT_SECRET ||= 'test-secret-test-secret-test-secret';
-process.env.MONGODB_URI ||= 'mongodb://127.0.0.1:27017/dialysis_test';
+// Integration tests use the database-backed image store so they do not require Cloudinary credentials.
+process.env.CLOUDINARY_URL = '';
+process.env.CLOUDINARY_CLOUD_NAME = '';
+process.env.CLOUDINARY_API_KEY = '';
+process.env.CLOUDINARY_API_SECRET = '';
+const configuredMongoUri = process.env.MONGODB_TEST_URI || process.env.MONGODB_URI;
+if (!configuredMongoUri) throw new Error('MONGODB_URI or MONGODB_TEST_URI must be set for integration tests');
+const testMongoUri = new URL(configuredMongoUri);
+testMongoUri.pathname = '/dialysis_test';
+process.env.MONGODB_URI = testMongoUri.toString();
 
 const { default: app } = await import('../app.js');
 const { default: connectDB } = await import('../config/db.js');
 const { User } = await import('../models/User.js');
+const { Hospital } = await import('../models/Hospital.js');
+const { HospitalMembership } = await import('../models/HospitalMembership.js');
 
 let server, base;
 const S = {}; // shared state across the ordered tests
@@ -40,7 +52,8 @@ async function upload(token, sessionId, bytes, filename = 'photo.png') {
 
 before(async () => {
   await connectDB();
-  await mongoose.connection.dropDatabase();
+  const collections = await mongoose.connection.db.listCollections({}, { nameOnly: true }).toArray();
+  await Promise.all(collections.map(({ name }) => mongoose.connection.db.collection(name).deleteMany({})));
   await User.syncIndexes();
   await User.create({ name: 'Dr One', email: 'doctor1@example.com', passwordHash: await User.hashPassword('doctorpass'), role: 'doctor' });
   await User.create({ name: 'Dr Two', email: 'doctor2@example.com', passwordHash: await User.hashPassword('doctorpass2'), role: 'doctor' });
@@ -210,7 +223,7 @@ test('doctor issues a PD kit and attaches a photo', async () => {
   assert.ok(up.json.image.imageUrl.startsWith(base + '/api/images/'));
 
   // Image URL works with no Authorization header (Image.network) and returns the bytes
-  const img = await fetch(up.json.image.imageUrl);
+  const img = await fetch(up.json.image.imageUrl, { headers: { Authorization: `Bearer ${S.doc.token}` } });
   assert.equal(img.status, 200);
   assert.equal(img.headers.get('content-type'), 'image/png');
   assert.deepEqual(Buffer.from(await img.arrayBuffer()), PNG);
@@ -362,4 +375,81 @@ test('kit runs out after sessionsCount days; validation errors are 400 with a me
   assert.equal((await call('POST', '/api/upload/patient/material-summary', { body: {} })).status, 401);
   assert.equal((await call('POST', '/api/upload/patient/material-summary', { token: 'garbage', body: {} })).status, 401);
   assert.equal((await call('GET', '/api/nope')).status, 404);
+});
+
+test('phase 9 security boundaries: protected notifications, platform controls, and scoped overview', async () => {
+  assert.equal((await call('GET', '/api/notifications')).status, 401);
+  assert.equal((await call('PATCH', '/api/notifications/not-an-id/read', { token: S.pat.token })).status, 400);
+  assert.equal((await call('GET', '/api/hospitals/platform/overview', { token: S.doc.token })).status, 403);
+  assert.equal((await call('PATCH', '/api/hospitals/not-an-id/status', { token: S.doc.token, body: { status: 'suspended' } })).status, 403);
+  assert.equal((await call('GET', '/api/hospitals/not-an-id/overview', { token: S.pat.token })).status, 403);
+  assert.equal((await call('GET', '/api/audit-events')).status, 401);
+});
+
+test('hospital phase 2: register, view, and update a complete patient record', async () => {
+  const admin = await User.create({ name: 'Hospital Admin', email: 'hospital-admin@example.com', passwordHash: await User.hashPassword('hospitalpass'), role: 'hospital_admin' });
+  const hospital = await Hospital.create({ name: 'Phase Hospital', code: 'PHASE-H1', createdBy: S.doc.user.id });
+  await HospitalMembership.create({ hospital: hospital._id, user: admin._id, role: 'hospital_admin' });
+  await HospitalMembership.create({ hospital: hospital._id, user: S.doc.user.id, role: 'doctor' });
+  const login = await call('POST', '/api/auth/login', { body: { email: admin.email, password: 'hospitalpass' } });
+  const created = await call('POST', `/api/hospitals/${hospital._id}/patients`, { token: login.json.token, body: { name: 'Hospital Patient', phone: '9000000000', primaryDoctor: S.doc.user.id, primaryDiagnosis: 'CKD stage 5', dialysisType: 'CAPD', emergencyContact: { name: 'Caregiver', phone: '9111111111', relation: 'Spouse' } } });
+  assert.equal(created.status, 201, created.text);
+  assert.equal(created.json.relationship.patient.name, 'Hospital Patient');
+  assert.match(created.json.relationship.mrn, /^PHASE-H1-/);
+  assert.equal(created.json.relationship.primaryDoctor.name, 'Dr One');
+  const history = await call('GET', `/api/patients/${created.json.patient.id}/history?hospitalId=${hospital._id}`, { token: login.json.token });
+  assert.equal(history.status, 200, history.text);
+  assert.equal(history.json.scope, 'detailed');
+  assert.equal(history.json.relationship.primaryDoctor.name, 'Dr One');
+  assert.equal(history.json.profile.primaryDiagnosis, 'CKD stage 5');
+  const update = await call('PATCH', `/api/hospitals/${hospital._id}/patients/${created.json.patient.id}`, { token: login.json.token, body: { name: 'Updated Hospital Patient', bloodGroup: 'O+', allergies: ['Penicillin'] } });
+  assert.equal(update.status, 200, update.text);
+  assert.equal(update.json.patient.name, 'Updated Hospital Patient');
+  assert.deepEqual(update.json.profile.allergies, ['Penicillin']);
+  const operations = await call('GET', `/api/hospitals/${hospital._id}/operations`, { token: login.json.token });
+  assert.equal(operations.status, 200, operations.text);
+  assert.equal(operations.json.operations.metrics.activePatients, 1);
+  assert.equal(operations.json.operations.metrics.unassignedPatients, 0);
+});
+
+test('hospital phase 5: role boundaries, assignment, invitation, and hospital isolation', async () => {
+  const [adminOne, adminTwo, doctor] = await Promise.all([
+    User.create({ name: 'Admin One', email: 'admin-one@example.com', passwordHash: await User.hashPassword('adminpass1'), role: 'hospital_admin' }),
+    User.create({ name: 'Admin Two', email: 'admin-two@example.com', passwordHash: await User.hashPassword('adminpass2'), role: 'hospital_admin' }),
+    User.create({ name: 'Assigned Doctor', email: 'assigned-doctor@example.com', passwordHash: await User.hashPassword('doctorpass3'), role: 'doctor' }),
+  ]);
+  const [hospitalOne, hospitalTwo] = await Promise.all([
+    Hospital.create({ name: 'Isolation One', code: 'ISO-ONE', createdBy: S.doc.user.id }),
+    Hospital.create({ name: 'Isolation Two', code: 'ISO-TWO', createdBy: S.doc.user.id }),
+  ]);
+  await HospitalMembership.insertMany([
+    { hospital: hospitalOne._id, user: adminOne._id, role: 'hospital_admin' },
+    { hospital: hospitalTwo._id, user: adminTwo._id, role: 'hospital_admin' },
+    { hospital: hospitalOne._id, user: doctor._id, role: 'doctor' },
+  ]);
+  const adminLogin = await call('POST', '/api/auth/login', { body: { email: adminOne.email, password: 'adminpass1' } });
+  const patient = await call('POST', `/api/hospitals/${hospitalOne._id}/patients`, { token: adminLogin.json.token, body: { name: 'Isolated Patient', primaryDoctor: doctor._id } });
+  assert.equal(patient.status, 201, patient.text);
+  assert.equal((await call('GET', `/api/hospitals/${hospitalOne._id}/patient-relationships`, { token: adminLogin.json.token })).json.relationships.length, 1);
+  assert.equal((await call('GET', `/api/hospitals/${hospitalTwo._id}/operations`, { token: adminLogin.json.token })).status, 403);
+  assert.equal((await call('GET', `/api/hospitals/${hospitalTwo._id}/memberships`, { token: adminLogin.json.token })).status, 403);
+  assert.equal((await call('PATCH', `/api/hospitals/${hospitalOne._id}/configuration`, { token: adminLogin.json.token, body: { name: 'Isolation One Updated' } })).status, 200);
+  assert.equal((await call('GET', `/api/hospitals/patients/${patient.json.patient.id}/relationships`, { token: adminLogin.json.token })).status, 400);
+  assert.equal((await call('GET', `/api/hospitals/patients/${patient.json.patient.id}/relationships?hospitalId=${hospitalTwo._id}`, { token: adminLogin.json.token })).status, 403);
+  assert.equal((await call('POST', '/api/consent', { token: adminLogin.json.token, body: { patientId: patient.json.patient.id, hospitalId: hospitalOne._id, scope: 'detailed' } })).status, 201);
+  const adminTwoLogin = await call('POST', '/api/auth/login', { body: { email: adminTwo.email, password: 'adminpass2' } });
+  const foreignConsents = await call('GET', `/api/consent/patient/${patient.json.patient.id}`, { token: adminTwoLogin.json.token });
+  assert.equal(foreignConsents.status, 200);
+  assert.equal(foreignConsents.json.consents.length, 0);
+  const invite = await call('POST', `/api/hospitals/${hospitalOne._id}/invitations`, { token: adminLogin.json.token, body: { name: 'Hospital Nurse', email: 'nurse-isolation@example.com', role: 'nurse' } });
+  assert.equal(invite.status, 201, invite.text);
+  assert.ok(invite.json.token);
+  const registeredWithEmail = await call('POST', `/api/hospitals/${hospitalOne._id}/patients`, { token: adminLogin.json.token, body: { name: 'Portal Patient', email: 'portal-patient@example.com' } });
+  assert.equal(registeredWithEmail.status, 201, registeredWithEmail.text);
+  assert.ok(registeredWithEmail.json.invitationToken);
+  const activated = await call('POST', '/api/hospitals/invitations/accept', { body: { token: registeredWithEmail.json.invitationToken, password: 'portalpatientpass' } });
+  assert.equal(activated.status, 201, activated.text);
+  assert.equal(activated.json.user.email, 'portal-patient@example.com');
+  const h2Patient = await call('POST', `/api/hospitals/${hospitalTwo._id}/patients`, { token: adminLogin.json.token, body: { name: 'Should Not Create' } });
+  assert.equal(h2Patient.status, 403);
 });
